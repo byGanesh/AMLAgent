@@ -1,3 +1,7 @@
-fastapi
 openai
-dotenv
+python-dotenv
+pandas
+numpy
+scikit-learn
+xgboost
+lightgbm
