@@ -9,7 +9,7 @@ Your job is to write Python code that:
 2. Profiles it - shape, dtypes, missing values, basic statistics
 3. Cleans it - handle missing values with reasoned strategy per column
 4. Engineers features - create new meaningful features based on what you see
-5. Saves the cleaned dataframe as cleaned_data.csv in the same directory
+5. Always save the cleaned data as cleaned_data.csv regardless of input file type
 6. Prints a structure summary of everything you did
 
 Rules:
@@ -17,7 +17,8 @@ Rules:
 - Always print a clear summary at the end
 - The summary must include: final shape, features created, features dropped, missing value treatment
 - Write complete, runnable Python code - no placeholders, no comments saying 'add code here'
-- Use pandas, numpy, scikit-learn only - nothing else
+- Use whatever library makes sense for the file type (pandas for CSV, json module for JSON, etc.)
+- If the file type is unknown, write code to detect and handle it appropriately
 - Do not use any plotting libraries - no matplotlib, no seaborn
 - The file path will be provided to you - use it exactly as given
 """
