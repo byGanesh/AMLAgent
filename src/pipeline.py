@@ -34,19 +34,20 @@ Rules:
 - The validation metric should match the task (accuracy/F1/RMSE etc.)"""
 
 EVAL_SYSTEM_PROMPT = """You are an ML experiment evaluator.
-Given the experiment history, analyze the results and decide what to try next.
+Analyze results and decide what to try next.
 
-Return a JSON object with these exact keys:
+Return ONLY valid JSON — no markdown, no explanation outside the JSON:
+
 {
-    "diagnosis": "what happened",
-    "failure_mode": "overfitting|underfitting|wrong_features|convergence_failure|data_leakage|class_imbalance|null",
-    "hypothesis": "exactly what model to try next with specific params",
-    "should_stop": true/false,
-    "stop_reason": "why stopping or null",
-    "confidence": 0.0-1.0
+    "diagnosis": "what happened and why",
+    "failure_mode": "overfitting|underfitting|wrong_features|convergence_failure|null",
+    "hypothesis": "exact model and params to try next",
+    "should_stop": false,
+    "stop_reason": null,
+    "confidence": 0.8
 }
 
-Stop if: val_score has not improved for 3 iterations, target threshold crossed, or data leakage detected."""
+Stop if no improvement for 3 iterations or data leakage detected."""
 
 
 class Pipeline:
@@ -58,76 +59,64 @@ class Pipeline:
         self.sandbox = Sandbox()
 
     def run_data_step(self, file_name: str, task: str) -> dict:
-        messages = [
-            {
-                "role": "user",
-                "content": f"Dataset: {file_name}\nTask: {task}\nWrite Python code to prepare this data."
-            }
-        ]
-        response = call_llm(DATA_SYSTEM_PROMPT, messages, max_tokens=4096)
-        code = extract_text(response)
-        code = self._extract_code(code)
-
-        result = self.sandbox.run(code, str(self.workspace))
-        if not result["success"]:
-            messages.append({"role": "assistant", "content": code})
-            messages.append({
-                "role": "user",
-                "content": f"This code failed:\n{result['stderr']}\nFix it and return the complete corrected version."
-            })
+        code = ""
+        error = ""
+        for attempt in range(2):
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"Dataset: {file_name}\nTask: {task}\n{error}Write Python code to prepare this data."
+                }
+            ]
             response = call_llm(DATA_SYSTEM_PROMPT, messages, max_tokens=4096)
             code = self._extract_code(extract_text(response))
             result = self.sandbox.run(code, str(self.workspace))
+            if result["success"]:
+                summary = self._parse_json(result["stdout"])
+                return {"success": True, "summary": summary, "code": code, "raw_output": result["stdout"]}
+            error = f"Previous attempt failed: {result['stderr'][:400]}\n"
 
-        if not result["success"]:
-            return {"success": False, "error": result["stderr"]}
-
-        summary = self._parse_json(result["stdout"])
-        return {"success": True, "summary": summary, "code": code, "raw_output": result["stdout"]}
+        return {"success": False, "error": result["stderr"]}
 
     def run_model_step(self, hypothesis: str, task: str) -> dict:
-        messages = [
-            {
-                "role": "user",
-                "content": f"Task: {task}\nHypothesis: {hypothesis}\nWrite Python code to train and evaluate this model."
-            }
-        ]
-        response = call_llm(MODEL_SYSTEM_PROMPT, messages, max_tokens=4096)
-        code = self._extract_code(extract_text(response))
-
+        error_context = ""
         for attempt in range(3):
+            messages = [
+                {
+                    "role": "user",
+                    "content": f"Task: {task}\nHypothesis: {hypothesis}\n{error_context}Write Python code to train and evaluate this model."
+                }
+            ]
+            response = call_llm(MODEL_SYSTEM_PROMPT, messages, max_tokens=4096)
+            code = self._extract_code(extract_text(response))
             result = self.sandbox.run(code, str(self.workspace))
             if result["success"]:
                 metrics = self._parse_json(result["stdout"])
                 return {"success": True, "code": code, "metrics": metrics, "raw_output": result["stdout"]}
-            messages.append({"role": "assistant", "content": code})
-            messages.append({
-                "role": "user",
-                "content": f"Code failed:\n{result['stderr']}\nFix it."
-            })
-            response = call_llm(MODEL_SYSTEM_PROMPT, messages, max_tokens=4096)
-            code = self._extract_code(extract_text(response))
+            error_context = f"Previous attempt errored: {result['stderr'][:400]}\n"
 
         return {"success": False, "code": code, "error": result["stderr"]}
 
     def evaluate(self, history: list, task: str, iteration: int) -> dict:
+        recent = history[-3:]
         messages = [
             {
                 "role": "user",
-                "content": f"Task: {task}\nIteration: {iteration}\nHistory:\n{json.dumps(history, indent=2)}\nAnalyze and return JSON."
+                "content": f"Task: {task}\nIteration: {iteration}\nRecent history:\n{json.dumps(recent, indent=2)}\nReturn ONLY valid JSON."
             }
         ]
-        response = call_llm(EVAL_SYSTEM_PROMPT, messages, max_tokens=1024)
-        raw = extract_text(response).strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        response = call_llm(EVAL_SYSTEM_PROMPT, messages, max_tokens=512)
+        decision = self._parse_json(extract_text(response))
+        if not decision:
             return {
-                "diagnosis": "Parse error", "failure_mode": None,
+                "diagnosis": "Could not parse evaluation.",
+                "failure_mode": None,
                 "hypothesis": "Try RandomForestClassifier with n_estimators=100",
-                "should_stop": False, "stop_reason": None, "confidence": 0.3
+                "should_stop": False,
+                "stop_reason": None,
+                "confidence": 0.3
             }
+        return decision
 
     def run(self, file_name: str, task: str) -> dict:
         run_id = f"{Path(file_name).stem}_{datetime.now():%Y%m%d_%H%M%S}"
