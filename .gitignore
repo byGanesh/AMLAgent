@@ -1,2 +1,7 @@
 .env
 .local.env
+cleaned_data.csv
+
+__pycache__
+runs/
+workspace/
